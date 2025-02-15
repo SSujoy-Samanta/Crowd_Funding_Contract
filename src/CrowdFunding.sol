@@ -2,11 +2,17 @@
 pragma solidity ^0.8.20;
 
 contract CrowdFunding {
+    enum VotingStatus {
+        Pending,
+        OnGoing,
+        Completed
+    }
+
     address public immutable creator;
     uint256 public immutable fundingGoal;
     uint256 public fundsRaised;
-    bool public votingCompleted;
-    bool public fundingSuccessful;
+    VotingStatus public votingStatus = VotingStatus.Pending;
+    bool public fundingApproved;
 
     struct Backer {
         uint256 balance;
@@ -29,7 +35,7 @@ contract CrowdFunding {
         _;
     }
 
-    constructor (address _creator, uint256 _goalAmount) {
+    constructor(address _creator, uint256 _goalAmount) {
         require(_creator != address(0), "Invalid creator address");
         require(_goalAmount > 0, "Funding goal must be greater than zero");
 
@@ -40,13 +46,14 @@ contract CrowdFunding {
     // Function to contribute ETH
     function creditFund() external payable {
         require(msg.value > 0, "Must send ETH");
-        require(!votingCompleted, "Voting already completed, project terminated");
+        require(votingStatus == VotingStatus.Pending, "Voting already completed or it is ongoing");
 
         backers[msg.sender].balance += msg.value;
         fundsRaised += msg.value;
 
         // Start voting automatically when goal is reached
-        if (fundsRaised >= fundingGoal && !votingCompleted) {
+        if (fundsRaised >= fundingGoal && votingStatus == VotingStatus.Pending) {
+            votingStatus = VotingStatus.OnGoing;
             emit VotingStarted();
         }
 
@@ -55,24 +62,23 @@ contract CrowdFunding {
 
     // Backers can vote YES or NO on fund withdrawal
     function vote(bool _vote) external {
-        require(!votingCompleted, "Voting has ended");
+        require(votingStatus == VotingStatus.OnGoing, "Voting is not active");
         require(backers[msg.sender].balance > 0, "Only backers can vote");
-        require(fundsRaised >= fundingGoal, "Voting has not started yet");
         require(!backers[msg.sender].hasVoted, "Already voted");
 
         uint256 weight = backers[msg.sender].balance;
         backers[msg.sender].hasVoted = true;
-        
+
         _vote ? yesVotes += weight : noVotes += weight;
 
         // Check if voting is complete
         if (yesVotes > fundsRaised / 2) {
-            votingCompleted = true;
-            fundingSuccessful = true;
+            votingStatus = VotingStatus.Completed;
+            fundingApproved = true;
             emit VotingEnded(true);
         } else if (noVotes >= fundsRaised / 2) {
-            votingCompleted = true;
-            fundingSuccessful = false;
+            votingStatus = VotingStatus.Completed;
+            fundingApproved = false;
             emit VotingEnded(false);
         }
 
@@ -82,8 +88,8 @@ contract CrowdFunding {
     // Creator can withdraw funds if funding goal is reached and majority voted YES
     function withdrawFunds() external onlyOwner {
         require(fundsRaised >= fundingGoal, "Funding goal not reached yet");
-        require(votingCompleted, "Voting is not completed yet");
-        require(fundingSuccessful, "Funding not approved");
+        require(votingStatus == VotingStatus.Completed, "Voting is not completed yet");
+        require(fundingApproved, "Funding not approved");
 
         uint256 amount = address(this).balance;
         require(amount > 0, "No funds to withdraw");
@@ -99,12 +105,12 @@ contract CrowdFunding {
 
     // Function to refund ETH to backer if funding is unsuccessful
     function claimRefund() external {
-        require(votingCompleted, "Voting must be completed first");
-        require(!fundingSuccessful, "Funding was successful, no refunds");
+        require(votingStatus == VotingStatus.Completed, "Voting must be completed first");
+        require(!fundingApproved, "Funding was successful, no refunds");
         require(backers[msg.sender].balance > 0, "No funds to refund");
 
         uint256 amount = backers[msg.sender].balance;
-        
+
         // Prevent reentrancy attack: Reset before sending funds
         backers[msg.sender].balance = 0;
 
